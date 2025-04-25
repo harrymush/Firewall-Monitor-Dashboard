@@ -1,123 +1,233 @@
-
 ```markdown
-# Firewall Monitor & Dashboard
+# Firewall Monitor & Dashboard for macOS
 
-A Python-based firewall log monitoring and analysis system for macOS, built to run continuously in the background as a system daemon. It collects, processes, and exposes firewall data for local or remote dashboard viewing.
+A custom-built firewall monitoring solution for macOS that continuously captures, analyzes, and visualizes `pf` (Packet Filter) logs. Designed to run as a background daemon and power a real-time dashboard with actionable insights into incoming and outgoing network traffic.
 
 ---
 
-## 📦 Project Structure
+## Table of Contents
 
-```bash
-firewall_monitor/
-├── firewall_monitor.py        # Collects and parses real-time pf firewall logs
-├── analyze_pf_log.py         # Analyzes collected log data (top IPs, ports, etc.)
-├── run_monitor.sh            # Shell script to run both Python scripts together
-├── logs/                     # Log output directory (e.g. /var/log/firewall_monitor/)
-└── README.md                 # This file
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Script Breakdown](#script-breakdown)
+- [System Daemon Setup](#system-daemon-setup)
+- [Dashboard](#dashboard)
+- [Log Output](#log-output)
+- [Troubleshooting & Challenges](#troubleshooting--challenges)
+- [Next Steps](#next-steps)
+
+---
+
+## Overview
+
+This project was created to provide real-time visibility into macOS's `pf` firewall activity, using a lightweight Python-based backend and a simple web dashboard frontend. The system is designed to be modular, extensible, and robust — surviving reboots and running independently without user interaction.
+
+It’s ideal for:
+
+- Home lab monitoring
+- Self-hosted firewall analysis
+- Visualizing incoming/outgoing connection attempts
+- Learning firewall log parsing and threat analysis
+
+---
+
+## Features
+
+- Real-time log capture using `tcpdump` from the `pf` firewall
+- Automatic filtering and parsing of suspicious traffic
+- Top source IP and port analysis
+- JSON-friendly log outputs for front-end consumption
+- LaunchDaemon support for always-on background monitoring
+- Lightweight dashboard (HTML + JS) with log summaries
+- Docker-friendly environment for isolated dashboard testing
+
+---
+
+## 🧱 Architecture
+
+```
+           ┌────────────────────────────────┐
+           │      pf firewall (macOS)       │
+           └────────────┬───────────────────┘
+                        │ (real-time logs)
+                        ▼
+           ┌────────────────────────────────┐
+           │   firewall_monitor.py          │
+           │  - Runs tcpdump on pflog0      │
+           │  - Writes to raw log file      │
+           └────────────┬───────────────────┘
+                        │ (log parsing)
+                        ▼
+           ┌────────────────────────────────┐
+           │   analyze_pf_log.py            │
+           │  - Summarizes IPs and ports    │
+           │  - Highlights suspicious data  │
+           └────────────┬───────────────────┘
+                        │
+        ┌───────────────┴───────────────┐
+        ▼                               ▼
+ /var/log/firewall_monitor/      Dashboard Frontend
+ (raw, suspicious, summary)         (charts & tabs)
 ```
 
 ---
 
-## 🔧 How It Works
+## Script Breakdown
 
-### 1. **Monitor Script**
-The core of the system consists of two Python scripts:
+### `firewall_monitor.py`
 
-- `firewall_monitor.py`: Reads `pf` firewall logs in real time using `subprocess` and writes to a rotating log file.
-- `analyze_pf_log.py`: Parses the logs to highlight top source IPs, targeted ports, and suspicious activity.
+- Launches `tcpdump -n -ttt -i pflog0` via `subprocess`
+- Filters and parses output in real time
+- Stores data in `firewall.log` using log rotation
+- Ensures long-running process stability
 
-They are executed together using a wrapper script:
+### `analyze_pf_log.py`
+
+- Reads the `firewall.log`
+- Extracts:
+  - Most frequent **source IPs**
+  - Most targeted **destination ports**
+  - Suspicious patterns (e.g. repetitive access attempts)
+- Outputs:
+  - `summary.log` (for visualization)
+  - `suspicious.log` (IP flags, unknown ports, etc.)
+
+### `run_monitor.sh`
+
+A shell script that runs both Python scripts in background mode.
 
 ```bash
-./run_monitor.sh
+#!/bin/bash
+/opt/firewall_monitor/firewall_monitor.py &
+sleep 2
+/opt/firewall_monitor/analyze_pf_log.py &
 ```
 
-### 2. **Dashboard**
-A minimal web dashboard was created and tested using a temporary Docker container that:
+---
 
-- Mounts the log files
-- Reads and visualizes output from the analyzer
-- Provides a basic front-end for real-time monitoring
+## System Daemon Setup
 
-### 3. **System Daemon (LaunchDaemon)**
-To automate log monitoring:
+To ensure the monitor runs on reboot and stays persistent, a **macOS LaunchDaemon** plist was created:
 
-- The scripts were moved to `/opt/firewall_monitor/` for persistence.
-- A macOS LaunchDaemon `.plist` was created at:
+### Location
 
 ```bash
 /Library/LaunchDaemons/com.firewall.monitor.plist
 ```
 
-This runs the monitor on startup and ensures it stays running in the background.
+### Purpose
 
-### 4. **Log Output**
-Logs are stored at:
+- Executes `run_monitor.sh` on system boot
+- Logs output to a log directory
+- Requires root/sudo permissions to install and manage
+
+### Install Process
+
+```bash
+sudo cp com.firewall.monitor.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.firewall.monitor.plist
+```
+
+Make sure the script is executable:
+
+```bash
+chmod +x /opt/firewall_monitor/run_monitor.sh
+```
+
+And create the log output folder:
+
+```bash
+sudo mkdir -p /var/log/firewall_monitor
+sudo chown root:wheel /var/log/firewall_monitor
+```
+
+---
+
+## Dashboard
+
+### Functionality
+
+A minimal front-end dashboard was developed to:
+
+- Display summaries (`summary.log`)
+- Show suspicious connections (`suspicious.log`)
+- Allow filtering and tab-based navigation
+- Enable auto-refresh to visualize live data
+
+### Stack
+
+- HTML + JavaScript frontend
+- Log data fetched from a mounted directory (e.g. via Docker volume)
+- Tested in a lightweight Docker container for portability
+
+```bash
+docker run -v /var/log/firewall_monitor:/app/logs -p 8080:80 firewall-dashboard
+```
+
+### Planned Tabs
+
+- **Summary View**: Top IPs, ports, protocols
+- **Suspicious View**: Filtered alerts
+- **Raw View**: Complete raw logs (optional)
+
+---
+
+## Log Output
+
+All logs are written to:
 
 ```bash
 /var/log/firewall_monitor/
 ```
 
-Including:
+- `firewall.log`: Raw unprocessed logs
+- `summary.log`: Top source IPs and destination ports
+- `suspicious.log`: Highlighted entries based on heuristics (e.g. port scanning, unknown services)
 
-- `firewall.log`: Raw log output from pf
-- `suspicious.log`: Highlighted suspicious activity
-- `summary.log`: Top IPs, ports, and trends
-
----
-
-## 🚀 Setup Summary
-
-1. Clone or copy `firewall_monitor/` to `/opt/`
-2. Make `run_monitor.sh` executable:
-   ```bash
-   chmod +x /opt/firewall_monitor/run_monitor.sh
-   ```
-3. Create the log directory:
-   ```bash
-   sudo mkdir -p /var/log/firewall_monitor
-   sudo chown root:wheel /var/log/firewall_monitor
-   ```
-4. Install the `com.firewall.monitor.plist` to `/Library/LaunchDaemons/`
-5. Load the service:
-   ```bash
-   sudo launchctl load /Library/LaunchDaemons/com.firewall.monitor.plist
-   ```
+All files are rotated and kept clean. Future updates may include auto-deletion of files older than 7 days.
 
 ---
 
-## 📈 Next Steps
+## 🛠 Troubleshooting & Challenges
 
-- **Dashboard Enhancements**:
-  - Add interactive charts using Chart.js
-  - Implement tabbed views (Summary, Suspicious, Raw)
-  - Auto-refresh frontend data
-  - Filter out common traffic (e.g. from local DNS server or port 53)
+### Real-time Log Monitoring
 
-- **Data Source Linking**:
-  - Update dashboard backend to use logs from `/var/log/firewall_monitor/`
-  - Ensure paths in Docker container or web app reflect the final script location (`/opt/firewall_monitor/`)
+- `pf` logs aren’t available through normal syslog on macOS.
+- Required use of `tcpdump -i pflog0`, which doesn’t buffer well, so we implemented a `subprocess` line reader with error handling and timeouts.
 
-- **Security and Access**:
-  - Add basic auth to dashboard
-  - Consider SSH tunneling or VPN for remote access
+### ⚙️ LaunchDaemon Behavior
 
-- **Log Management**:
-  - Ensure auto-deletion of logs older than 7 days
-  - Add archiving option if needed
+- Needed to make sure script paths were **absolute**, not relative.
+- The daemon failed silently without correct permissions on `/opt` and `/var/log`.
+- Made sure the log directory was created with proper ownership (`root:wheel`).
 
----
+### 🧪 Dashboard Testing
 
-## 🧠 Notes
-
-- This project is designed for educational and monitoring purposes.
-- Tested on macOS using the native `pf` firewall and LaunchDaemon system.
+- Initially ran dashboard using a local web server.
+- Later, moved it into a Docker container for portability and simplicity.
+- Updated script paths to reflect the final install directory (`/opt/firewall_monitor/`).
 
 ---
 
-## 🛠️ Author
+## Next Steps
 
-Harrymush – Cybersecurity, Python, and Network Monitoring enthusiast  
-```
+- [ ] **Dashboard Enhancements**
+  - Chart.js visualizations
+  - Tabbed interface: Raw | Suspicious | Summary
+  - Auto-refresh using JS
+  - Filtering: Exclude internal DNS (e.g. 192.168.1.74:53)
 
+- [ ] **Log Management**
+  - Auto-delete files older than 7 days
+  - Zip/archive old logs for optional review
+
+- [ ] **Security & Access**
+  - Add simple HTTP auth for dashboard
+  - Expose dashboard over SSH tunnel or VPN (e.g. Twingate)
+
+- [ ] **Codebase Refactor**
+  - Convert shell script logic into a Python controller
+  - Unit testing for parsing logic
+
+Author - Harrymush
